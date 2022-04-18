@@ -1,0 +1,193 @@
+---
+title: When heritage means rich and white
+date: "2022-04-16"
+categories: 
+  - map
+  - heritage
+  - data
+format: 
+  hugo:
+    execute:
+      include: false
+  html:
+    code-fold: true
+---
+
+```{r}
+#| label: libraries
+#| include: false
+library(tidyverse)
+library(sf)
+library(mapview)
+library(cancensus)
+options(
+  cancensus.api_key="CensusMapper_8d58c7ec210a852a6cb5aa2c13226fd9")
+options(cancensus.cache_path = "./census_cache/")
+
+```
+
+```{r}
+#| label: read_data
+#| include: false
+census_data_da <- get_census(
+  dataset = 'CA16',
+  regions = list(CD = "3520"),
+  vectors = c(
+    "v_CA16_3996",
+    "v_CA16_3957",
+    "v_CA16_3954",
+    "v_CA16_2397",
+    "v_CA16_2207"
+  ),
+  labels = "detailed",
+  geo_format = "sf",
+  level = 'DA'
+) %>%
+  st_as_sf() %>%
+  mutate(
+        pct_visible_minority = 100 * `v_CA16_3957: Total visible minority population` / `v_CA16_3954: Total - Visible minority for the population in private households - 25% sample data`,
+    median_household_income_percentile = 100 * ecdf(`v_CA16_2397: Median total income of households in 2015 ($)`)(`v_CA16_2397: Median total income of households in 2015 ($)`),
+    pct_visible_minority_f = glue::glue("{round(pct_visible_minority)}%"),
+    median_household_income_percentile_f = glue::glue("{round(median_household_income_percentile)}%")
+  )
+
+census_population <- read_rds("data/census_pop.rds") %>%
+  rename_all(str_to_lower) %>%
+  mutate(
+    change = population_ca21 - population_ca16,
+    pct_change = change / population_ca16,
+    pct_change_trimmed = case_when(
+      pct_change > 0.15 ~ 0.15,
+      pct_change < -0.15 ~ -0.15,
+      TRUE ~ pct_change
+    ) * 100
+  ) %>%
+  filter(!is.na(pct_change)) %>%
+  mutate(percent_change = paste0(round(100*pct_change, 1), "%"))
+  
+heritage_data <-
+  read_sf("data/Heritage Register Data(2022)/HeritageRegister.shp") %>%
+  mutate(status_simplified=ifelse(Status == "Listed", "Listed", "Designated"))
+hcd_data <-
+  read_sf(
+    "data/Heritage Conservation Districts Data(2022)/HeritageConservationDistrict.shp"
+  )
+ward_data <-
+  read_sf("data/City Wards Data - 4326/City Wards Data.shp")
+```
+
+```{r}
+#| label: plot
+#| fig-cap: My caption
+#| include: true
+
+popupTable2 <- function(...) {
+  pt_args <- list(...)
+  pop <- do.call(leafpop::popupTable, pt_args)
+  return(as.character(pop))
+}
+
+mv <- mapview(
+  heritage_data, 
+  cex=0.75, 
+  alpha=0, 
+  alpha.regions=0.7, 
+  zcol="status_simplified", 
+  col.regions=c("firebrick", "red"),
+  label="Address", 
+  popup=popupTable2(
+    heritage_data,
+    zcol=c(
+      "Address",
+      "Status",
+      "Details"
+    ),
+    feature.id=FALSE,
+    row.numbers=FALSE
+  ),
+  layer.name="Heritage properties",
+  canvas=TRUE,
+  map.types=c("Stamen.TonerLite", "Stamen.Toner", "CartoDB.Positron", "CartoDB.DarkMatter")
+) + 
+  mapview(
+    st_boundary(hcd_data), 
+    popup=popupTable2(
+      hcd_data, 
+      zcol=c("HCD_NAME", "HCD_DESDAT"), 
+      feature.id=FALSE, 
+      row.numbers=FALSE
+    ), 
+    label="HCD_NAME", 
+    color="firebrick",
+    layer.name="Heritage conservation district"
+  ) +
+  mapview(
+    census_data_da, 
+    zcol="pct_visible_minority", 
+    col.regions=viridis::cividis(100, direction=-1), 
+    alpha=0.1, 
+    alpha.regions=0.5, 
+    popup=popupTable2(
+      census_data_da,
+      zcol=c(
+        "Population",
+        "v_CA16_3957: Total visible minority population", 
+        "v_CA16_3996: Not a visible minority",
+        "pct_visible_minority_f"
+      ),
+      feature.id=FALSE,
+      row.numbers=FALSE
+    ),
+    label=NA,
+    layer.name="Percent visible minority"
+  )+
+  mapview(
+    census_data_da, 
+    zcol="median_household_income_percentile", 
+    col.regions=viridis::mako(100, direction=-1), 
+    alpha=0.1, 
+    alpha.regions=0.5, 
+    popup=popupTable2(
+      census_data_da,
+      zcol=c(
+        "Population",
+        "v_CA16_2397: Median total income of households in 2015 ($)",
+        "median_household_income_percentile_f"
+      ),
+    feature.id=FALSE,
+    row.numbers=FALSE
+    ),
+    hide=TRUE,
+    label=NA,
+    layer.name="Median income percentile"
+  ) + 
+  mapview(
+    st_boundary(ward_data),
+    label="FIELD_14",
+    popup=FALSE,
+    layer.name="Ward boundaries",
+    legend=FALSE,
+    hide=TRUE
+  ) +
+  mapview(
+    census_population,
+    zcol="pct_change_trimmed",
+    col.regions=RColorBrewer::brewer.pal(11, "BrBG"),
+    alpha=0.4,
+    alpha.regions=0.6,
+    label="percent_change",
+    layer.name="% pop. change, 2016 to 2021",
+    popup=popupTable2(
+      census_population,
+      zcol=c("population_ca16", "population_ca21", "change", "percent_change"),
+      row.numbers=FALSE,
+      feature.id=FALSE
+    ),
+    hide=TRUE
+  )
+```
+```{r}
+mapviewOptions(fgb=FALSE)
+mapshot(removeMapJunk(mv@map, c("homeButton", "easyButton")), url="index.html")
+```
+
